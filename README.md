@@ -1,7 +1,16 @@
 # jbrowse-plugin-zarr
 
 Reads multi-sample quantitative signal from a [Zarr v3](https://zarr.dev/) store
-into a JBrowse 2 `MultiQuantitativeTrack`.
+into a JBrowse 2
+[`MultiQuantitativeTrack`](https://jbrowse.org/jb2/docs/user_guides/multiquantitative_track).
+The store holds one samples-by-bins array per resolution level, described by the
+[`jbrowse_signal_matrix`](#store-format) metadata below, so this reads stores
+written for it rather than Zarr in general.
+
+**Worked example:**
+[Population copy number with the 1000 Genomes panel](https://jbrowse.org/jb2/docs/tutorials/population_cnv)
+builds a store from 2504 individuals' QuicK-mer2 depth and puts it beside the
+same panel's SV callset.
 
 ## Why
 
@@ -17,8 +26,11 @@ hosting with no tile server.
 
 ## Install
 
-In **beta**: not on npm and not in the plugin store yet, but the built bundle is
-hosted, so it loads from any config today. Add the plugin and a track:
+In **beta**: not on npm and not in the
+[plugin store](https://jbrowse.org/jb2/docs/user_guides/plugin_store) yet, but
+the built bundle is hosted, so it loads from any config today (see
+[configuring plugins](https://jbrowse.org/jb2/docs/config_guides/plugins)). Add
+the plugin and a track:
 
 ```json
 {
@@ -61,7 +73,9 @@ plus one `float32` array per resolution level:
       {
         "path": "bin1000",
         "binSize": 1000,
-        "refs": { "chr17": { "start": 35000000, "binOffset": 0, "numBins": 2500 } }
+        "refs": {
+          "chr17": { "start": 35000000, "binOffset": 0, "numBins": 2500 }
+        }
       }
     ]
   }
