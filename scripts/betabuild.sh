@@ -4,7 +4,7 @@
 # Same arrangement as jbrowse-plugin-graphgenomeviewer, and the same two traps
 # apply, so they are handled the same way:
 #
-#   1. uploading a stale dist/ — so this always cleans and rebuilds, and gates
+#   1. uploading a stale dist/, so this always cleans and rebuilds, and gates
 #      on lint, typecheck and tests first, because the artifact is public the
 #      moment it lands.
 #   2. an upload nobody can see. jbrowse.org sits behind CloudFront, so an
@@ -12,8 +12,8 @@
 #      long after a successful S3 write. Cache-Control is set explicitly and the
 #      entry point is invalidated every time.
 #
-# This bundle is a single fixed-name UMD file plus its map — nothing here is
-# content-hashed — so everything gets the short TTL and everything is
+# This bundle is a single fixed-name UMD file plus its map (nothing here is
+# content-hashed), so everything gets the short TTL and everything is
 # invalidated. That is why the build below is `build:bundle` and not `build`:
 # `build` also runs tsc, which writes .js/.d.ts next to the bundle, and those
 # would be uploaded alongside it for no reason.

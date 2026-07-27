@@ -109,6 +109,6 @@ pnpm betabuild     # lint, typecheck, test, build, upload, invalidate, verify
 
 Pushes to `s3://jbrowse.org/demos/zarr/`, which is what the config URL above
 serves. The script re-downloads the entry point through CloudFront afterwards
-and fails if it does not match what was just built — jbrowse.org is behind a
+and fails if it does not match what was just built. jbrowse.org is behind a
 CDN, and an upload the edge keeps shadowing looks exactly like a successful
 publish otherwise.
