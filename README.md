@@ -7,10 +7,13 @@ The store holds one samples-by-bins array per resolution level, described by the
 [`jbrowse_signal_matrix`](#store-format) metadata below, so this reads stores
 written for it rather than Zarr in general.
 
-**Worked example:**
-[Population copy number with the 1000 Genomes panel](https://jbrowse.org/jb2/docs/tutorials/population_cnv)
-builds a store from 2504 individuals' QuicK-mer2 depth and puts it beside the
-same panel's SV callset.
+![Copy number for 2504 individuals as a red and blue heatmap, one row per person, over a 190 kb window of human chromosome 17](img/zarr_cohort.png)
+
+Every individual in the 1000 Genomes panel over the CCL3L1 locus, one row each,
+clustered so the copy-number classes separate. White is two copies, red a gain,
+blue a loss. The whole screen is three requests against one store. Built in
+[Population copy number with the 1000 Genomes panel](https://jbrowse.org/jb2-staging/docs/tutorials/population_cnv/),
+this adapter's worked example, which also covers writing the store.
 
 ## Why
 
