@@ -15,6 +15,14 @@ blue a loss. The whole screen is three requests against one store. Built in
 [Population copy number with the 1000 Genomes panel](https://jbrowse.org/jb2-staging/docs/tutorials/population_cnv/),
 this adapter's worked example, which also covers writing the store.
 
+The copy-number values are not ours. They are
+[QuicK-mer2](https://github.com/KiddLab/QuicK-mer2) estimates over the 30x 1000
+Genomes panel, produced by the Kidd lab at the University of Michigan and
+published as the [KiddLab/kmer_1KG](https://github.com/KiddLab/kmer_1KG) track
+hub. If you use them, cite Shen F and Kidd JM,
+[Rapid, Paralog-Sensitive CNV Analysis of 2457 Human Genomes Using QuicK-mer2](https://doi.org/10.3390/genes11020141),
+Genes 2020, 11(2):141.
+
 ## Why
 
 A multi-sample signal track built from one BigWig per sample is bound by round
