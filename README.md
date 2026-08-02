@@ -99,6 +99,11 @@ coordinate of that refName's first bin, so a store can cover one window of one
 chromosome rather than a whole genome. Unmeasured bins are the array's `NaN`
 fill value and are dropped rather than drawn as zero.
 
+Chunk each level with the whole sample axis inside one chunk,
+`[all samples, 256 bins]` or thereabouts. This is the opposite of the natural
+per-sample layout, and it is what the format buys: split the samples across
+chunks instead and a screenful costs a read per sample again.
+
 Levels are a resolution pyramid: the adapter reads the coarsest level whose bins
 are still no wider than a screen pixel.
 
