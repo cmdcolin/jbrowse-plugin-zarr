@@ -1,5 +1,7 @@
 import { gzipSync } from 'zlib'
 
+import { firstValueFrom, toArray } from 'rxjs'
+
 import MultiWiggleZarrAdapter from './MultiWiggleZarrAdapter'
 import configSchema from './configSchema'
 
@@ -21,15 +23,23 @@ const BASE_VALUES = Float32Array.from(
   },
 )
 
-function arrayMetadata(numBins: number) {
+// The coarse pyramid level: each bin is the mean of the two bin100 bins under
+// it, skipping unmeasured ones, which is what build_signal_zarr.ts's downsample
+// does. s2's third bin averages only bin 2, since bin 3 is NaN.
+const COARSE_BINS = 3
+const COARSE_VALUES = Float32Array.from([
+  0.5, 2.5, 4.5, 10.5, 12, 14.5, 20.5, 22.5, 24.5,
+])
+
+function arrayMetadata(numBins: number, numSamples = SAMPLES.length) {
   return {
     zarr_format: 3,
     node_type: 'array',
-    shape: [SAMPLES.length, numBins],
+    shape: [numSamples, numBins],
     data_type: 'float32',
     chunk_grid: {
       name: 'regular',
-      configuration: { chunk_shape: [SAMPLES.length, CHUNK_BINS] },
+      configuration: { chunk_shape: [numSamples, CHUNK_BINS] },
     },
     chunk_key_encoding: { name: 'default', configuration: { separator: '/' } },
     fill_value: 'NaN',
@@ -60,26 +70,51 @@ function chunkFiles(path: string, values: Float32Array, numBins: number) {
   return files
 }
 
-const STORE: Record<string, Uint8Array | string> = {
-  '/zarr.json': JSON.stringify({
+function groupMetadata(levels: unknown[]) {
+  return JSON.stringify({
     zarr_format: 3,
     node_type: 'group',
     attributes: {
       jbrowse_signal_matrix: {
         version: 1,
         samples: SAMPLES.map(name => ({ name, group: 'demo' })),
-        levels: [
-          {
-            path: 'bin100',
-            binSize: 100,
-            refs: { ctgA: { start: 1000, binOffset: 0, numBins: NUM_BINS } },
-          },
-        ],
+        levels,
       },
     },
-  }),
+  })
+}
+
+const LEVELS = [
+  {
+    path: 'bin100',
+    binSize: 100,
+    refs: { ctgA: { start: 1000, binOffset: 0, numBins: NUM_BINS } },
+  },
+  {
+    path: 'bin200',
+    binSize: 200,
+    refs: { ctgA: { start: 1000, binOffset: 0, numBins: COARSE_BINS } },
+  },
+]
+
+const STORE: Record<string, Uint8Array | string> = {
+  '/zarr.json': groupMetadata(LEVELS),
   '/bin100/zarr.json': JSON.stringify(arrayMetadata(NUM_BINS)),
   ...chunkFiles('bin100', BASE_VALUES, NUM_BINS),
+  '/bin200/zarr.json': JSON.stringify(arrayMetadata(COARSE_BINS)),
+  ...chunkFiles('bin200', COARSE_VALUES, COARSE_BINS),
+}
+
+// Same metadata, but the level array holds two rows for the three samples the
+// metadata declares — the malformed store the shape check exists to catch.
+const WRONG_SHAPE_STORE: Record<string, Uint8Array | string> = {
+  '/zarr.json': groupMetadata([LEVELS[0]]),
+  '/bin100/zarr.json': JSON.stringify(arrayMetadata(NUM_BINS, 2)),
+}
+
+const STORES: Record<string, Record<string, Uint8Array | string>> = {
+  'test.zarr': STORE,
+  'wrongshape.zarr': WRONG_SHAPE_STORE,
 }
 
 function makeAdapter() {
@@ -88,17 +123,25 @@ function makeAdapter() {
   )
 }
 
-// Serve STORE over a stubbed global fetch, so the adapter runs its real
+// Serve STORES over a stubbed global fetch, so the adapter runs its real
 // zarrita read path (v3 metadata, gzip codec, chunk grid) against bytes written
 // exactly the way scripts/build_signal_zarr.ts writes them.
 let fetchCalls = 0
+let failLevelFetches = false
 beforeEach(() => {
   fetchCalls = 0
+  failLevelFetches = false
   vi.stubGlobal('fetch', (input: RequestInfo | URL) => {
     fetchCalls++
-    const url = typeof input === 'string' ? input : 'url' in input ? input.url : `${input}`
-    const key = new URL(url).pathname.replace('/test.zarr', '')
-    const body = STORE[key]
+    const url =
+      typeof input === 'string' ? input : 'url' in input ? input.url : `${input}`
+    const [, storeName, key] =
+      /^\/([^/]+\.zarr)(\/.*)$/.exec(new URL(url).pathname) ?? []
+    // a level's own zarr.json, not the root group's
+    if (failLevelFetches && key !== '/zarr.json' && key?.endsWith('zarr.json')) {
+      return Promise.resolve(new Response(null, { status: 500 }))
+    }
+    const body = storeName && key ? STORES[storeName]?.[key] : undefined
     return Promise.resolve(
       body === undefined
         ? new Response(null, { status: 404 })
@@ -175,4 +218,90 @@ test('honors the sources filter without refetching per sample', async () => {
   // group metadata + array metadata + the two chunks covering six bins. The
   // point of the format: three samples cost the same requests as three thousand
   expect(fetchCalls).toBeLessThanOrEqual(4)
+})
+
+test('getFeatures honors the sources filter too', async () => {
+  const adapter = makeAdapter()
+  const region = { refName: 'ctgA', start: 1000, end: 1600, assemblyName: 'a' }
+  const feats = await firstValueFrom(
+    adapter
+      .getFeatures(region, { bpPerPx: 1, sources: [{ name: 's3' }] })
+      .pipe(toArray()),
+  )
+  expect([...new Set(feats.map(f => f.get('source')))]).toEqual(['s3'])
+  // the clustering path (getScoreMatrix) fetches through here, and a subtree
+  // filter narrowing 2500 samples to 3 should not build the other 2497 rows
+  expect(feats).toHaveLength(NUM_BINS)
+})
+
+test('getFeatures carries refName in the uniqueId', async () => {
+  const adapter = makeAdapter()
+  const region = { refName: 'ctgA', start: 1000, end: 1600, assemblyName: 'a' }
+  const feats = await firstValueFrom(
+    adapter.getFeatures(region, { bpPerPx: 1 }).pipe(toArray()),
+  )
+  // getFeaturesInMultipleRegions concatenates regions, so the same bin
+  // coordinate on two contigs must not collide
+  expect(feats[0]!.id()).toBe('s1-ctgA-1000')
+  expect(new Set(feats.map(f => f.id())).size).toBe(feats.length)
+})
+
+test('rejects a level whose row count disagrees with the sample list', async () => {
+  const adapter = new MultiWiggleZarrAdapter(
+    configSchema.create({ uri: 'http://localhost/wrongshape.zarr' }),
+  )
+  const region = { refName: 'ctgA', start: 1000, end: 1600, assemblyName: 'a' }
+  // a two-row array under a three-sample metadata: without the check, sample s3
+  // reads off the end of the buffer and `Number.isNaN(undefined)` is false, so
+  // it comes back as a full row of NaN-scored features instead of an error
+  await expect(
+    adapter.getMultiSourceFeatureArraysMulti([region], { bpPerPx: 1 }),
+  ).rejects.toThrow(/shaped \[2, 6\], expected \[3, bins\]/)
+})
+
+test('a failed level open is not cached forever', async () => {
+  const adapter = makeAdapter()
+  const region = { refName: 'ctgA', start: 1000, end: 1600, assemblyName: 'a' }
+  failLevelFetches = true
+  await expect(
+    adapter.getMultiSourceFeatureArraysMulti([region], { bpPerPx: 1 }),
+  ).rejects.toThrow()
+  // the level is re-picked on every navigation, so a transient failure must not
+  // leave that zoom level dead for the life of the adapter
+  failLevelFetches = false
+  const result = await adapter.getMultiSourceFeatureArraysMulti([region], {
+    bpPerPx: 1,
+  })
+  expect(result[0]!.raws[0]!.count).toBe(NUM_BINS)
+})
+
+const REGION = { refName: 'ctgA', start: 1000, end: 1600, assemblyName: 'a' }
+
+test('zooming out reads the coarse pyramid level', async () => {
+  const adapter = makeAdapter()
+  const fine = await adapter.getMultiSourceFeatureArraysMulti([REGION], {
+    bpPerPx: 1,
+  })
+  expect([...fine[0]!.raws[0]!.scores]).toEqual([0, 1, 2, 3, 4, 5])
+
+  // one bin no wider than a pixel is the rule, so 200 bp/px reaches bin200
+  const coarse = await adapter.getMultiSourceFeatureArraysMulti([REGION], {
+    bpPerPx: 200,
+  })
+  expect([...coarse[0]!.raws[0]!.scores]).toEqual([0.5, 2.5, 4.5])
+  expect([...coarse[0]!.raws[0]!.starts]).toEqual([1000, 1200, 1400])
+})
+
+test('resolutionMultiplier shifts which level is picked', async () => {
+  const adapter = new MultiWiggleZarrAdapter(
+    configSchema.create({
+      uri: 'http://localhost/test.zarr',
+      resolutionMultiplier: 200,
+    }),
+  )
+  // bpPerPx 1 would take bin100 on its own; x200 asks for a level 200x coarser
+  const result = await adapter.getMultiSourceFeatureArraysMulti([REGION], {
+    bpPerPx: 1,
+  })
+  expect([...result[0]!.raws[0]!.scores]).toEqual([0.5, 2.5, 4.5])
 })

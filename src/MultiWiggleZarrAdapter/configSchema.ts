@@ -50,6 +50,17 @@ const MultiWiggleZarrAdapter = ConfigurationSchema(
         locationType: 'UriLocation',
       },
     },
+
+    /**
+     * #slot
+     */
+    resolutionMultiplier: {
+      type: 'number',
+      defaultValue: 1,
+      description:
+        'Resolution multiplier applied to level selection: <1 picks a finer pyramid level (more bins per screen), >1 a coarser one',
+      advanced: true,
+    },
   },
   {
     explicitlyTyped: true,

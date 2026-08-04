@@ -1,9 +1,9 @@
 import { BaseFeatureDataAdapter } from '@jbrowse/core/data_adapters/BaseAdapter'
-import { SimpleFeature, isUriLocation, updateStatus } from '@jbrowse/core/util'
-import { getFetcher, resolveUriLocation } from '@jbrowse/core/util/io'
+import { SimpleFeature, updateStatus } from '@jbrowse/core/util'
 import { ObservableCreate } from '@jbrowse/core/util/rxjs'
 
 import { parseSignalMatrixMetadata, pickLevel } from './signalMatrixMetadata'
+import { openZarrGroup, zarritaP } from '../zarrStore'
 
 import type {
   SignalMatrixLevel,
@@ -63,6 +63,14 @@ const EMPTY_RAW: RawFeatureArrays = {
   count: 0,
 }
 
+// The subtree filter in the clustering sidebar narrows the source list the
+// display sends down, so this is a real user-driven filter and not just the
+// full list echoed back. `undefined` means "no filter", which is not the same
+// as an empty one.
+function wantedNames(sources: { name: string }[] | undefined) {
+  return sources?.length ? new Set(sources.map(s => s.name)) : undefined
+}
+
 // A bin the converter never wrote (no k-mers, a gap, or outside the store's
 // covered window) comes back as the array's NaN fill value. Dropping those keeps
 // an unmeasured region visibly empty rather than drawing it as zero coverage.
@@ -101,6 +109,26 @@ function slabToRaw(slab: RegionSlab, sampleIndex: number): RawFeatureArrays {
   }
 }
 
+// Checked rather than trusted, because the failure is silent otherwise: a level
+// with fewer rows than the metadata claims makes the last samples' `subarray`
+// run off the end, and `Number.isNaN(undefined)` is false, so those rows come
+// back as full-length runs of NaN-scored features instead of an error.
+async function openLevelArray(
+  group: ZarrGroup<FetchStore>,
+  level: SignalMatrixLevel,
+  numSamples: number,
+) {
+  const zarr = await zarritaP
+  const array = await zarr.open.v3(group.resolve(level.path), { kind: 'array' })
+  const { shape } = array
+  if (shape.length !== 2 || shape[0] !== numSamples) {
+    throw new Error(
+      `signal matrix level "${level.path}" is shaped [${shape.join(', ')}], expected [${numSamples}, bins] to match the ${numSamples} samples in the store metadata`,
+    )
+  }
+  return array
+}
+
 // A samples-by-bins quantitative matrix in a Zarr v3 store: one chunk holds
 // every sample over a span of bins, so a screenful of a 2500-sample cohort is a
 // couple of range requests instead of the 3-4 sequential index reads per file
@@ -117,25 +145,15 @@ export default class MultiWiggleZarrAdapter extends BaseFeatureDataAdapter {
 
   private async setupPre(opts?: BaseOptions) {
     const { statusCallback = () => {} } = opts ?? {}
-    const zarr = await import('zarrita')
-    const conf = this.getConf('zarrLocation')
-    if (!isUriLocation(conf)) {
-      throw new Error(
-        'MultiWiggleZarrAdapter needs a URI: a Zarr store is a directory of chunk files, which only an HTTP(S) location can serve',
-      )
-    }
-    const location = resolveUriLocation(conf)
-    const fetcher = getFetcher(location, this.pluginManager)
-    const store = new zarr.FetchStore(location.uri.replace(/\/+$/, ''), {
-      fetch: request => fetcher(request),
-    })
     const group = await updateStatus(
       'Downloading zarr metadata',
       statusCallback,
-      // v3 explicitly, not the auto-detecting `open`: that probes for v2
-      // metadata first, which is two 404 round trips before anything is read.
-      // Request count is the whole reason this format exists.
-      () => zarr.open.v3(store, { kind: 'group' }),
+      () =>
+        openZarrGroup({
+          adapterName: 'MultiWiggleZarrAdapter',
+          location: this.getConf('zarrLocation'),
+          pluginManager: this.pluginManager,
+        }),
     )
     return {
       group,
@@ -155,11 +173,19 @@ export default class MultiWiggleZarrAdapter extends BaseFeatureDataAdapter {
   // One open per level for the life of the adapter: opening an array is its own
   // metadata read, and the level is re-picked on every navigation.
   private async openLevel(level: SignalMatrixLevel, opts?: BaseOptions) {
-    const { group, arrays } = await this.setup(opts)
+    const { group, arrays, meta } = await this.setup(opts)
     let arrayP = arrays.get(level.path)
     if (!arrayP) {
-      const zarr = await import('zarrita')
-      arrayP = zarr.open.v3(group.resolve(level.path), { kind: 'array' })
+      // The rejection is not kept. A failed open is usually a transient fetch,
+      // and the level is re-picked on every navigation, so caching it would
+      // leave that zoom level broken for the life of the adapter with no way
+      // back short of reloading the page.
+      arrayP = openLevelArray(group, level, meta.samples.length).catch(
+        (e: unknown) => {
+          arrays.delete(level.path)
+          throw e
+        },
+      )
       arrays.set(level.path, arrayP)
     }
     return arrayP
@@ -176,7 +202,11 @@ export default class MultiWiggleZarrAdapter extends BaseFeatureDataAdapter {
   ): Promise<RegionSlab> {
     const { bpPerPx = 0, resolution = 1 } = opts
     const { meta } = await this.setup(opts)
-    const level = pickLevel(meta.levels, bpPerPx / resolution)
+    const resolutionMultiplier: number = this.getConf('resolutionMultiplier')
+    const level = pickLevel(
+      meta.levels,
+      (bpPerPx / resolution) * resolutionMultiplier,
+    )
     const span = level.refs[region.refName]
     if (!span) {
       return EMPTY_SLAB
@@ -190,7 +220,7 @@ export default class MultiWiggleZarrAdapter extends BaseFeatureDataAdapter {
     if (last <= first) {
       return EMPTY_SLAB
     }
-    const zarr = await import('zarrita')
+    const zarr = await zarritaP
     const array = await this.openLevel(level, opts)
     const chunk = await zarr.get(array, [
       null,
@@ -215,9 +245,7 @@ export default class MultiWiggleZarrAdapter extends BaseFeatureDataAdapter {
     opts: WiggleOptions = {},
   ): Promise<{ source: string; raws: RawFeatureArrays[] }[]> {
     const { meta } = await this.setup(opts)
-    const wanted = opts.sources?.length
-      ? new Set(opts.sources.map(s => s.name))
-      : undefined
+    const wanted = wantedNames(opts.sources)
     const slabs = await updateStatus(
       'Downloading signal matrix',
       opts.statusCallback ?? (() => {}),
@@ -240,24 +268,47 @@ export default class MultiWiggleZarrAdapter extends BaseFeatureDataAdapter {
     return meta.samples.map(sample => ({ ...sample, source: sample.name }))
   }
 
+  // The feature-object path, which the multiwiggle render never takes — it uses
+  // the typed arrays above. This is what clustering (getScoreMatrix) reads, and
+  // it costs one SimpleFeature per sample per bin, so it emits straight off the
+  // slab rather than building per-sample typed arrays it would immediately throw
+  // away.
   public getFeatures(
     region: Region,
     opts: WiggleOptions = {},
   ): Observable<Feature> {
     return ObservableCreate<Feature>(async observer => {
       const { meta } = await this.setup(opts)
-      const slab = await this.fetchRegionSlab(region, opts)
+      const wanted = wantedNames(opts.sources)
+      const { numBins, binSize, start, values } = await this.fetchRegionSlab(
+        region,
+        opts,
+      )
       const { refName } = region
       for (const [sampleIndex, sample] of meta.samples.entries()) {
-        const raw = slabToRaw(slab, sampleIndex)
-        for (let i = 0; i < raw.count; i++) {
+        if (wanted && !wanted.has(sample.name)) {
+          continue
+        }
+        const row = values.subarray(
+          sampleIndex * numBins,
+          (sampleIndex + 1) * numBins,
+        )
+        for (let i = 0; i < numBins; i++) {
+          const score = row[i]!
+          if (Number.isNaN(score)) {
+            continue
+          }
+          const featureStart = start + i * binSize
           observer.next(
             new SimpleFeature({
-              uniqueId: `${sample.name}-${raw.starts[i]}`,
+              // refName included: getFeaturesInMultipleRegions concatenates
+              // regions, and two of them can hold the same bin coordinate on
+              // different contigs.
+              uniqueId: `${sample.name}-${refName}-${featureStart}`,
               refName,
-              start: raw.starts[i]!,
-              end: raw.ends[i]!,
-              score: raw.scores[i]!,
+              start: featureStart,
+              end: featureStart + binSize,
+              score,
               source: sample.name,
             }),
           )
