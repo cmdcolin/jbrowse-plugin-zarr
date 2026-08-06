@@ -4,6 +4,7 @@ import { firstValueFrom, toArray } from 'rxjs'
 
 import MultiWiggleZarrAdapter from './MultiWiggleZarrAdapter'
 import configSchema from './configSchema'
+import { parseSignalMatrixMetadata } from './signalMatrixMetadata'
 
 // A three-sample, two-level store built in memory and served through the fetch
 // mock, so the test exercises the real zarrita read path (v3 metadata, gzip
@@ -70,13 +71,13 @@ function chunkFiles(path: string, values: Float32Array, numBins: number) {
   return files
 }
 
-function groupMetadata(levels: unknown[]) {
+function groupMetadata(levels: unknown[], version = 1) {
   return JSON.stringify({
     zarr_format: 3,
     node_type: 'group',
     attributes: {
       jbrowse_signal_matrix: {
-        version: 1,
+        version,
         samples: SAMPLES.map(name => ({ name, group: 'demo' })),
         levels,
       },
@@ -105,6 +106,27 @@ const STORE: Record<string, Uint8Array | string> = {
   ...chunkFiles('bin200', COARSE_VALUES, COARSE_BINS),
 }
 
+// The min and max of the same two bin100 bins each COARSE_VALUES entry averages.
+// s2's third coarse bin has only bin 2 measured, so its min, mean and max all
+// collapse to 12 — the case where a summary correctly says "no spread here"
+// rather than reporting a range over a bin that was never measured.
+const COARSE_MINS = Float32Array.from([0, 2, 4, 10, 12, 14, 20, 22, 24])
+const COARSE_MAXS = Float32Array.from([1, 3, 5, 11, 12, 15, 21, 23, 25])
+
+const SUMMARY_LEVELS = [
+  LEVELS[0],
+  { ...LEVELS[1], minPath: 'bin200_min', maxPath: 'bin200_max' },
+]
+
+const SUMMARY_STORE: Record<string, Uint8Array | string> = {
+  ...STORE,
+  '/zarr.json': groupMetadata(SUMMARY_LEVELS, 2),
+  '/bin200_min/zarr.json': JSON.stringify(arrayMetadata(COARSE_BINS)),
+  ...chunkFiles('bin200_min', COARSE_MINS, COARSE_BINS),
+  '/bin200_max/zarr.json': JSON.stringify(arrayMetadata(COARSE_BINS)),
+  ...chunkFiles('bin200_max', COARSE_MAXS, COARSE_BINS),
+}
+
 // Same metadata, but the level array holds two rows for the three samples the
 // metadata declares — the malformed store the shape check exists to catch.
 const WRONG_SHAPE_STORE: Record<string, Uint8Array | string> = {
@@ -115,11 +137,12 @@ const WRONG_SHAPE_STORE: Record<string, Uint8Array | string> = {
 const STORES: Record<string, Record<string, Uint8Array | string>> = {
   'test.zarr': STORE,
   'wrongshape.zarr': WRONG_SHAPE_STORE,
+  'summary.zarr': SUMMARY_STORE,
 }
 
-function makeAdapter() {
+function makeAdapter(store = 'test.zarr') {
   return new MultiWiggleZarrAdapter(
-    configSchema.create({ uri: 'http://localhost/test.zarr' }),
+    configSchema.create({ uri: `http://localhost/${store}` }),
   )
 }
 
@@ -304,4 +327,52 @@ test('resolutionMultiplier shifts which level is picked', async () => {
     bpPerPx: 1,
   })
   expect([...result[0]!.raws[0]!.scores]).toEqual([0.5, 2.5, 4.5])
+})
+
+test('a summary level returns the min and max beside the mean', async () => {
+  const adapter = makeAdapter('summary.zarr')
+  const result = await adapter.getMultiSourceFeatureArraysMulti([REGION], {
+    bpPerPx: 200,
+  })
+  const s1 = result[0]!.raws[0]!
+  expect([...s1.scores]).toEqual([0.5, 2.5, 4.5])
+  expect([...s1.minScores!]).toEqual([0, 2, 4])
+  expect([...s1.maxScores!]).toEqual([1, 3, 5])
+})
+
+// The bin whose second input was unmeasured: a summary over one value is that
+// value three times, not a range reaching down to the fill.
+test('a partly unmeasured coarse bin summarizes only what it measured', async () => {
+  const adapter = makeAdapter('summary.zarr')
+  const result = await adapter.getMultiSourceFeatureArraysMulti([REGION], {
+    bpPerPx: 200,
+  })
+  const s2 = result[1]!.raws[0]!
+  expect([...s2.scores]).toEqual([10.5, 12, 14.5])
+  expect([...s2.minScores!]).toEqual([10, 12, 14])
+  expect([...s2.maxScores!]).toEqual([11, 12, 15])
+})
+
+// Presence of the paths is the feature test, not the version number: the finest
+// level of a v2 store has nothing under it to summarize and declares neither.
+test('the finest level of a summary store reports no summary', async () => {
+  const adapter = makeAdapter('summary.zarr')
+  const result = await adapter.getMultiSourceFeatureArraysMulti([REGION], {
+    bpPerPx: 1,
+  })
+  expect([...result[0]!.raws[0]!.scores]).toEqual([0, 1, 2, 3, 4, 5])
+  expect(result[0]!.raws[0]!.minScores).toBeUndefined()
+  expect(result[0]!.raws[0]!.maxScores).toBeUndefined()
+})
+
+test('a level declaring one of minPath/maxPath is rejected', () => {
+  expect(() =>
+    parseSignalMatrixMetadata({
+      jbrowse_signal_matrix: {
+        version: 2,
+        samples: [{ name: 's1' }],
+        levels: [{ ...LEVELS[1], minPath: 'bin200_min' }],
+      },
+    }),
+  ).toThrow(/minPath without the other/)
 })

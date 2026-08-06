@@ -5,10 +5,7 @@ import { ObservableCreate } from '@jbrowse/core/util/rxjs'
 import { parseSignalMatrixMetadata, pickLevel } from './signalMatrixMetadata'
 import { openZarrGroup, zarritaP } from '../zarrStore'
 
-import type {
-  SignalMatrixLevel,
-  SignalMatrixMetadata,
-} from './signalMatrixMetadata'
+import type { SignalMatrixMetadata } from './signalMatrixMetadata'
 import type { BaseOptions } from '@jbrowse/core/data_adapters/BaseAdapter'
 import type { Feature, Region } from '@jbrowse/core/util'
 import type { Observable } from 'rxjs'
@@ -39,12 +36,16 @@ interface WiggleOptions extends BaseOptions {
 
 // One region's slab of the matrix: every sample's scores over the same bins, in
 // C order, so sample i is `values.subarray(i * numBins, (i + 1) * numBins)`.
+// `mins`/`maxs` are the same shape when the level carries a summary, and absent
+// on the finest level, which has nothing below it to summarize.
 interface RegionSlab {
   numBins: number
   binSize: number
   // genomic coordinate of the slab's first bin
   start: number
   values: Float32Array
+  mins: Float32Array | undefined
+  maxs: Float32Array | undefined
 }
 
 const EMPTY_SLAB: RegionSlab = {
@@ -52,6 +53,8 @@ const EMPTY_SLAB: RegionSlab = {
   binSize: 1,
   start: 0,
   values: new Float32Array(0),
+  mins: undefined,
+  maxs: undefined,
 }
 
 const EMPTY_RAW: RawFeatureArrays = {
@@ -75,11 +78,12 @@ function wantedNames(sources: { name: string }[] | undefined) {
 // covered window) comes back as the array's NaN fill value. Dropping those keeps
 // an unmeasured region visibly empty rather than drawing it as zero coverage.
 function slabToRaw(slab: RegionSlab, sampleIndex: number): RawFeatureArrays {
-  const { numBins, binSize, start, values } = slab
-  const row = values.subarray(
-    sampleIndex * numBins,
-    (sampleIndex + 1) * numBins,
-  )
+  const { numBins, binSize, start, values, mins, maxs } = slab
+  const lo = sampleIndex * numBins
+  const hi = lo + numBins
+  const row = values.subarray(lo, hi)
+  const minRow = mins?.subarray(lo, hi)
+  const maxRow = maxs?.subarray(lo, hi)
   let count = 0
   for (let i = 0; i < numBins; i++) {
     if (!Number.isNaN(row[i]!)) {
@@ -89,6 +93,10 @@ function slabToRaw(slab: RegionSlab, sampleIndex: number): RawFeatureArrays {
   const starts = new Int32Array(count)
   const ends = new Int32Array(count)
   const scores = new Float32Array(count)
+  // Allocated only on a summary level, so a base-resolution read still transfers
+  // three arrays rather than five.
+  const minScores = minRow ? new Float32Array(count) : undefined
+  const maxScores = maxRow ? new Float32Array(count) : undefined
   let out = 0
   for (let i = 0; i < numBins; i++) {
     const score = row[i]!
@@ -96,17 +104,19 @@ function slabToRaw(slab: RegionSlab, sampleIndex: number): RawFeatureArrays {
       starts[out] = start + i * binSize
       ends[out] = start + (i + 1) * binSize
       scores[out] = score
+      // The converter writes all three from the same set of finer bins, so a
+      // NaN here would mean a torn store; fall back to the mean rather than
+      // emit a NaN the renderer would carry into its scale.
+      if (minScores && maxScores) {
+        const min = minRow![i]!
+        const max = maxRow![i]!
+        minScores[out] = Number.isNaN(min) ? score : min
+        maxScores[out] = Number.isNaN(max) ? score : max
+      }
       out++
     }
   }
-  return {
-    starts,
-    ends,
-    scores,
-    minScores: undefined,
-    maxScores: undefined,
-    count,
-  }
+  return { starts, ends, scores, minScores, maxScores, count }
 }
 
 // Checked rather than trusted, because the failure is silent otherwise: a level
@@ -115,15 +125,15 @@ function slabToRaw(slab: RegionSlab, sampleIndex: number): RawFeatureArrays {
 // back as full-length runs of NaN-scored features instead of an error.
 async function openLevelArray(
   group: ZarrGroup<FetchStore>,
-  level: SignalMatrixLevel,
+  path: string,
   numSamples: number,
 ) {
   const zarr = await zarritaP
-  const array = await zarr.open.v3(group.resolve(level.path), { kind: 'array' })
+  const array = await zarr.open.v3(group.resolve(path), { kind: 'array' })
   const { shape } = array
   if (shape.length !== 2 || shape[0] !== numSamples) {
     throw new Error(
-      `signal matrix level "${level.path}" is shaped [${shape.join(', ')}], expected [${numSamples}, bins] to match the ${numSamples} samples in the store metadata`,
+      `signal matrix level "${path}" is shaped [${shape.join(', ')}], expected [${numSamples}, bins] to match the ${numSamples} samples in the store metadata`,
     )
   }
   return array
@@ -170,23 +180,25 @@ export default class MultiWiggleZarrAdapter extends BaseFeatureDataAdapter {
     return this.setupP
   }
 
-  // One open per level for the life of the adapter: opening an array is its own
-  // metadata read, and the level is re-picked on every navigation.
-  private async openLevel(level: SignalMatrixLevel, opts?: BaseOptions) {
+  // One open per array for the life of the adapter: opening an array is its own
+  // metadata read, and the level is re-picked on every navigation. Keyed by
+  // path rather than by level so a level's mean/min/max are three cache entries
+  // and the summary pair is only ever opened on a level that declares it.
+  private async openArray(path: string, opts?: BaseOptions) {
     const { group, arrays, meta } = await this.setup(opts)
-    let arrayP = arrays.get(level.path)
+    let arrayP = arrays.get(path)
     if (!arrayP) {
       // The rejection is not kept. A failed open is usually a transient fetch,
       // and the level is re-picked on every navigation, so caching it would
       // leave that zoom level broken for the life of the adapter with no way
       // back short of reloading the page.
-      arrayP = openLevelArray(group, level, meta.samples.length).catch(
+      arrayP = openLevelArray(group, path, meta.samples.length).catch(
         (e: unknown) => {
-          arrays.delete(level.path)
+          arrays.delete(path)
           throw e
         },
       )
-      arrays.set(level.path, arrayP)
+      arrays.set(path, arrayP)
     }
     return arrayP
   }
@@ -221,22 +233,37 @@ export default class MultiWiggleZarrAdapter extends BaseFeatureDataAdapter {
       return EMPTY_SLAB
     }
     const zarr = await zarritaP
-    const array = await this.openLevel(level, opts)
-    const chunk = await zarr.get(array, [
+    const selection = [
       null,
       zarr.slice(span.binOffset + first, span.binOffset + last),
-    ])
-    const values = chunk.data
-    if (!(values instanceof Float32Array)) {
-      throw new Error(
-        `signal matrix level "${level.path}" must be float32, got ${array.dtype}`,
-      )
+    ]
+    const read = async (path: string) => {
+      const array = await this.openArray(path, opts)
+      const { data } = await zarr.get(array, selection)
+      if (!(data instanceof Float32Array)) {
+        throw new Error(
+          `signal matrix level "${path}" must be float32, got ${array.dtype}`,
+        )
+      }
+      return data
     }
+    // In parallel and not sequentially: the three arrays are separate objects
+    // in the store, so a summary level costs three round trips rather than one
+    // if they wait on each other, which is the whole cost this format exists to
+    // avoid. The finest level has no pair and stays a single read.
+    const { minPath, maxPath } = level
+    const [values, mins, maxs] = await Promise.all([
+      read(level.path),
+      minPath && maxPath ? read(minPath) : undefined,
+      minPath && maxPath ? read(maxPath) : undefined,
+    ])
     return {
       numBins: last - first,
       binSize,
       start: span.start + first * binSize,
       values,
+      mins,
+      maxs,
     }
   }
 

@@ -21,10 +21,17 @@ export interface SignalMatrixRefSpan {
   numBins: number
 }
 
+// `minPath`/`maxPath` name sibling arrays holding the min and max of the finer
+// bins each bin of `path` averages, the same thing a BigWig zoom record carries
+// alongside its mean. They are optional and always travel together: the finest
+// level has nothing below it to summarize, and stores written before v2 have
+// none at all, so their presence is the feature test rather than `version`.
 export interface SignalMatrixLevel {
   path: string
   binSize: number
   refs: Record<string, SignalMatrixRefSpan>
+  minPath?: string
+  maxPath?: string
 }
 
 export interface SignalMatrixMetadata {
@@ -99,10 +106,22 @@ function readLevel(value: unknown, index: number): SignalMatrixLevel {
   if (!isRecord(value)) {
     throw new Error(`${where} must be an object`)
   }
+  const minPath = readOptionalString(value.minPath, `${where}.minPath`)
+  const maxPath = readOptionalString(value.maxPath, `${where}.maxPath`)
+  // Rejected rather than half-honored: with one of the pair the display would
+  // draw a whisker against the mean on the other side, which reads as a real
+  // asymmetry in the data instead of a missing array.
+  if ((minPath === undefined) !== (maxPath === undefined)) {
+    throw new Error(
+      `${where} has ${minPath ? 'minPath' : 'maxPath'} without the other; a summary level needs both`,
+    )
+  }
   return {
     path: readString(value.path, `${where}.path`),
     binSize: readNumber(value.binSize, `${where}.binSize`),
     refs: readRefs(value.refs, `${where}.refs`),
+    minPath,
+    maxPath,
   }
 }
 
