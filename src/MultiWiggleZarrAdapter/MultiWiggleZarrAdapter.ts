@@ -46,6 +46,11 @@ interface RegionSlab {
   values: Float32Array
   mins: Float32Array | undefined
   maxs: Float32Array | undefined
+  // The region's bin grid, built once on first use and shared by every sample
+  // whose row has no gaps. Cached on the slab rather than recomputed per sample
+  // because it depends only on the region.
+  gridStarts?: Int32Array
+  gridEnds?: Int32Array
 }
 
 const EMPTY_SLAB: RegionSlab = {
@@ -90,6 +95,42 @@ function slabToRaw(slab: RegionSlab, sampleIndex: number): RawFeatureArrays {
       count++
     }
   }
+
+  // The whole row is measured, which is the ordinary case for a binned store
+  // and universal at the coarse levels (a 1Mb bin is empty only where the
+  // reference is). Then the bin grid is the region's own, identical for every
+  // sample, and the values are already a contiguous run of the slab: hand back
+  // one shared grid and three views instead of five fresh arrays per sample.
+  //
+  // This is what decides whether a cohort renders at all. The interface is one
+  // RawFeatureArrays per sample PER REGION, so a 24-contig view of 2504 samples
+  // asks for 60,096 of them; copying meant ~300,000 typed arrays for a frame
+  // holding 31 MB of actual values, and the tab died before it drew. Sharing is
+  // safe because the consumer copies into its own buffers
+  // (processFeaturesFromArrays) and the transferable collector dedupes the
+  // buffers, so 2504 views of one slab transfer once rather than 2504 times.
+  if (count === numBins) {
+    let { gridStarts, gridEnds } = slab
+    if (!gridStarts || !gridEnds) {
+      gridStarts = new Int32Array(numBins)
+      gridEnds = new Int32Array(numBins)
+      for (let i = 0; i < numBins; i++) {
+        gridStarts[i] = start + i * binSize
+        gridEnds[i] = start + (i + 1) * binSize
+      }
+      slab.gridStarts = gridStarts
+      slab.gridEnds = gridEnds
+    }
+    return {
+      starts: gridStarts,
+      ends: gridEnds,
+      scores: row,
+      minScores: minRow,
+      maxScores: maxRow,
+      count,
+    }
+  }
+
   const starts = new Int32Array(count)
   const ends = new Int32Array(count)
   const scores = new Float32Array(count)

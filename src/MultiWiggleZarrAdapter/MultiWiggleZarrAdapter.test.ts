@@ -376,3 +376,39 @@ test('a level declaring one of minPath/maxPath is rejected', () => {
     }),
   ).toThrow(/minPath without the other/)
 })
+
+// The allocation shape, pinned. The interface is one RawFeatureArrays per sample
+// per region, so this is what decides whether a cohort renders: copying per
+// sample put ~300,000 typed arrays behind a 24-contig view of 2504 samples and
+// killed the tab. Assert identity, not just equality — equal-but-copied is
+// exactly the regression this guards.
+test('samples with no gaps share one bin grid and view the slab', async () => {
+  const adapter = makeAdapter()
+  const result = await adapter.getMultiSourceFeatureArraysMulti([REGION], {
+    bpPerPx: 1,
+  })
+  const [s1, s2, s3] = result.map(r => r.raws[0]!)
+  // s2 has an unmeasured bin, so it takes the filtered copy path
+  expect(s1!.count).toBe(NUM_BINS)
+  expect(s3!.count).toBe(NUM_BINS)
+  expect(s2!.count).toBe(NUM_BINS - 1)
+
+  expect(s1!.starts).toBe(s3!.starts)
+  expect(s1!.ends).toBe(s3!.ends)
+  expect(s2!.starts).not.toBe(s1!.starts)
+
+  // scores are windows onto one fetched buffer, so the collector transfers it
+  // once instead of once per sample
+  expect(s1!.scores.buffer).toBe(s3!.scores.buffer)
+  expect([...s1!.scores]).toEqual([0, 1, 2, 3, 4, 5])
+  expect([...s3!.scores]).toEqual([20, 21, 22, 23, 24, 25])
+})
+
+test('a gapped sample still reports the right coordinates', async () => {
+  const adapter = makeAdapter()
+  const [, s2] = await adapter.getMultiSourceFeatureArraysMulti([REGION], {
+    bpPerPx: 1,
+  })
+  expect([...s2!.raws[0]!.starts]).toEqual([1000, 1100, 1200, 1400, 1500])
+  expect([...s2!.raws[0]!.scores]).toEqual([10, 11, 12, 14, 15])
+})
