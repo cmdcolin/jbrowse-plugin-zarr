@@ -5,7 +5,10 @@ import { ObservableCreate } from '@jbrowse/core/util/rxjs'
 import { parseSignalMatrixMetadata, pickLevel } from './signalMatrixMetadata'
 import { openZarrGroup, zarritaP } from '../zarrStore'
 
-import type { SignalMatrixMetadata } from './signalMatrixMetadata'
+import type {
+  SignalMatrixLevel,
+  SignalMatrixMetadata,
+} from './signalMatrixMetadata'
 import type { BaseOptions } from '@jbrowse/core/data_adapters/BaseAdapter'
 import type { Feature, Region } from '@jbrowse/core/util'
 import type { Observable } from 'rxjs'
@@ -34,8 +37,11 @@ interface WiggleOptions extends BaseOptions {
   sources?: { name: string }[]
 }
 
-// One region's slab of the matrix: every sample's scores over the same bins, in
-// C order, so sample i is `values.subarray(i * numBins, (i + 1) * numBins)`.
+// One region's window onto a fetched block of the matrix. The block may be
+// wider than this region and shared with its neighbours (see planFetch), so a
+// row is addressed by `stride` and `offset` rather than assumed to start at
+// `sampleIndex * numBins`: sample i's values are
+// `values.subarray(i * stride + offset, i * stride + offset + numBins)`.
 // `mins`/`maxs` are the same shape when the level carries a summary, and absent
 // on the finest level, which has nothing below it to summarize.
 interface RegionSlab {
@@ -43,6 +49,10 @@ interface RegionSlab {
   binSize: number
   // genomic coordinate of the slab's first bin
   start: number
+  // bins per sample row in the underlying block, and this region's column
+  // offset within it
+  stride: number
+  offset: number
   values: Float32Array
   mins: Float32Array | undefined
   maxs: Float32Array | undefined
@@ -57,6 +67,8 @@ const EMPTY_SLAB: RegionSlab = {
   numBins: 0,
   binSize: 1,
   start: 0,
+  stride: 0,
+  offset: 0,
   values: new Float32Array(0),
   mins: undefined,
   maxs: undefined,
@@ -83,8 +95,8 @@ function wantedNames(sources: { name: string }[] | undefined) {
 // covered window) comes back as the array's NaN fill value. Dropping those keeps
 // an unmeasured region visibly empty rather than drawing it as zero coverage.
 function slabToRaw(slab: RegionSlab, sampleIndex: number): RawFeatureArrays {
-  const { numBins, binSize, start, values, mins, maxs } = slab
-  const lo = sampleIndex * numBins
+  const { numBins, binSize, start, stride, offset, values, mins, maxs } = slab
+  const lo = sampleIndex * stride + offset
   const hi = lo + numBins
   const row = values.subarray(lo, hi)
   const minRow = mins?.subarray(lo, hi)
@@ -249,20 +261,12 @@ export default class MultiWiggleZarrAdapter extends BaseFeatureDataAdapter {
     return [...new Set(meta.levels.flatMap(l => Object.keys(l.refs)))]
   }
 
-  private async fetchRegionSlab(
-    region: Region,
-    opts: WiggleOptions = {},
-  ): Promise<RegionSlab> {
-    const { bpPerPx = 0, resolution = 1 } = opts
-    const { meta } = await this.setup(opts)
-    const resolutionMultiplier: number = this.getConf('resolutionMultiplier')
-    const level = pickLevel(
-      meta.levels,
-      (bpPerPx / resolution) * resolutionMultiplier,
-    )
+  // Where one region lands on a level's flat bin axis, or undefined if the
+  // level does not cover it.
+  private placeRegion(region: Region, level: SignalMatrixLevel) {
     const span = level.refs[region.refName]
     if (!span) {
-      return EMPTY_SLAB
+      return undefined
     }
     const { binSize } = level
     const first = Math.max(0, Math.floor((region.start - span.start) / binSize))
@@ -270,42 +274,109 @@ export default class MultiWiggleZarrAdapter extends BaseFeatureDataAdapter {
       span.numBins,
       Math.ceil((region.end - span.start) / binSize),
     )
-    if (last <= first) {
-      return EMPTY_SLAB
-    }
-    const zarr = await zarritaP
-    const selection = [
-      null,
-      zarr.slice(span.binOffset + first, span.binOffset + last),
-    ]
-    const read = async (path: string) => {
-      const array = await this.openArray(path, opts)
-      const { data } = await zarr.get(array, selection)
-      if (!(data instanceof Float32Array)) {
-        throw new Error(
-          `signal matrix level "${path}" must be float32, got ${array.dtype}`,
-        )
+    return last <= first
+      ? undefined
+      : {
+          from: span.binOffset + first,
+          to: span.binOffset + last,
+          start: span.start + first * binSize,
+        }
+  }
+
+  // Merge the placed regions into as few reads as the layout allows.
+  //
+  // Every refName sits end to end on one bin axis in karyotype order, so a
+  // multi-region view is usually a contiguous run of it and a whole-genome view
+  // always is: 24 contigs at the coarsest level are ~3100 adjacent bins, which
+  // is a dozen chunks. Asking per region instead turns that into 24 slices, and
+  // 72 once a summary level triples them, for bytes the store would have handed
+  // over in one pass.
+  //
+  // Two runs merge when the gap between them is under a chunk, because that
+  // chunk is fetched either way. That is the whole rule: it never reads a chunk
+  // it would not have read, so two far-apart windows stay two reads and do not
+  // drag the space between them along.
+  private planFetch(placed: { from: number; to: number }[], chunkBins: number) {
+    const order = placed
+      .map((_, i) => i)
+      .sort((a, b) => placed[a]!.from - placed[b]!.from)
+    const runs: { from: number; to: number }[] = []
+    for (const i of order) {
+      const { from, to } = placed[i]!
+      const last = runs.at(-1)
+      if (last && from - last.to <= chunkBins) {
+        last.to = Math.max(last.to, to)
+      } else {
+        runs.push({ from, to })
       }
-      return data
     }
-    // In parallel and not sequentially: the three arrays are separate objects
-    // in the store, so a summary level costs three round trips rather than one
-    // if they wait on each other, which is the whole cost this format exists to
-    // avoid. The finest level has no pair and stays a single read.
+    return runs
+  }
+
+  private async fetchRegionSlabs(
+    regions: Region[],
+    opts: WiggleOptions = {},
+  ): Promise<RegionSlab[]> {
+    const { bpPerPx = 0, resolution = 1 } = opts
+    const { meta } = await this.setup(opts)
+    const resolutionMultiplier: number = this.getConf('resolutionMultiplier')
+    // One level for the whole call: bpPerPx describes the view, not a region.
+    const level = pickLevel(
+      meta.levels,
+      (bpPerPx / resolution) * resolutionMultiplier,
+    )
+    const placed = regions.map(region => this.placeRegion(region, level))
+    const present = placed.filter(p => p !== undefined)
+    if (!present.length) {
+      return regions.map(() => EMPTY_SLAB)
+    }
+
+    const zarr = await zarritaP
     const { minPath, maxPath } = level
-    const [values, mins, maxs] = await Promise.all([
-      read(level.path),
-      minPath && maxPath ? read(minPath) : undefined,
-      minPath && maxPath ? read(maxPath) : undefined,
-    ])
-    return {
-      numBins: last - first,
-      binSize,
-      start: span.start + first * binSize,
-      values,
-      mins,
-      maxs,
-    }
+    const paths = [
+      level.path,
+      ...(minPath && maxPath ? [minPath, maxPath] : []),
+    ]
+    const arrays = await Promise.all(paths.map(p => this.openArray(p, opts)))
+    const chunkBins = arrays[0]!.chunks[1] ?? 1
+    const runs = this.planFetch(present, chunkBins)
+
+    // Every read of every run at once: they are independent range requests and
+    // the point of the layout is that a screenful is a couple of them.
+    const blocks = await Promise.all(
+      runs.map(async run => {
+        const selection = [null, zarr.slice(run.from, run.to)]
+        const datas = await Promise.all(
+          arrays.map(async (array, i) => {
+            const { data } = await zarr.get(array, selection)
+            if (!(data instanceof Float32Array)) {
+              throw new Error(
+                `signal matrix level "${paths[i]}" must be float32, got ${array.dtype}`,
+              )
+            }
+            return data
+          }),
+        )
+        return { run, values: datas[0]!, mins: datas[1], maxs: datas[2] }
+      }),
+    )
+
+    return placed.map(p => {
+      if (!p) {
+        return EMPTY_SLAB
+      }
+      const block = blocks.find(b => b.run.from <= p.from && p.to <= b.run.to)!
+      return {
+        numBins: p.to - p.from,
+        binSize: level.binSize,
+        start: p.start,
+        stride: block.run.to - block.run.from,
+        offset: p.from - block.run.from,
+        values: block.values,
+        mins: block.mins,
+        maxs: block.maxs,
+      }
+    })
   }
 
   public async getMultiSourceFeatureArraysMulti(
@@ -317,8 +388,7 @@ export default class MultiWiggleZarrAdapter extends BaseFeatureDataAdapter {
     const slabs = await updateStatus(
       'Downloading signal matrix',
       opts.statusCallback ?? (() => {}),
-      () =>
-        Promise.all(regions.map(region => this.fetchRegionSlab(region, opts))),
+      () => this.fetchRegionSlabs(regions, opts),
     )
     return meta.samples
       .map((sample, sampleIndex) => ({ sample, sampleIndex }))
@@ -348,19 +418,15 @@ export default class MultiWiggleZarrAdapter extends BaseFeatureDataAdapter {
     return ObservableCreate<Feature>(async observer => {
       const { meta } = await this.setup(opts)
       const wanted = wantedNames(opts.sources)
-      const { numBins, binSize, start, values } = await this.fetchRegionSlab(
-        region,
-        opts,
-      )
+      const [slab] = await this.fetchRegionSlabs([region], opts)
+      const { numBins, binSize, start, stride, offset, values } = slab!
       const { refName } = region
       for (const [sampleIndex, sample] of meta.samples.entries()) {
         if (wanted && !wanted.has(sample.name)) {
           continue
         }
-        const row = values.subarray(
-          sampleIndex * numBins,
-          (sampleIndex + 1) * numBins,
-        )
+        const lo = sampleIndex * stride + offset
+        const row = values.subarray(lo, lo + numBins)
         for (let i = 0; i < numBins; i++) {
           const score = row[i]!
           if (Number.isNaN(score)) {

@@ -412,3 +412,105 @@ test('a gapped sample still reports the right coordinates', async () => {
   expect([...s2!.raws[0]!.starts]).toEqual([1000, 1100, 1200, 1400, 1500])
   expect([...s2!.raws[0]!.scores]).toEqual([10, 11, 12, 14, 15])
 })
+
+// Two contigs laid end to end on one bin axis, which is how the converter
+// writes every store: ctgA is bins 0-5, ctgB is bins 6-11, chunks are 4 wide,
+// so bin 6 (ctgB's first) shares chunk 1 with ctgA's last two.
+const MULTI_BINS = 6
+const MULTI_TOTAL = MULTI_BINS * 2
+const MULTI_VALUES = Float32Array.from(
+  { length: SAMPLES.length * MULTI_TOTAL },
+  (_, i) => Math.floor(i / MULTI_TOTAL) * 100 + (i % MULTI_TOTAL),
+)
+const MULTI_LEVELS = [
+  {
+    path: 'bin100',
+    binSize: 100,
+    refs: {
+      ctgA: { start: 1000, binOffset: 0, numBins: MULTI_BINS },
+      ctgB: { start: 0, binOffset: MULTI_BINS, numBins: MULTI_BINS },
+    },
+  },
+]
+const MULTI_STORE: Record<string, Uint8Array | string> = {
+  '/zarr.json': groupMetadata(MULTI_LEVELS),
+  '/bin100/zarr.json': JSON.stringify(arrayMetadata(MULTI_TOTAL)),
+  ...(() => {
+    const files: Record<string, Uint8Array> = {}
+    for (let c = 0; c * CHUNK_BINS < MULTI_TOTAL; c++) {
+      const buf = new Float32Array(SAMPLES.length * CHUNK_BINS).fill(Number.NaN)
+      const from = c * CHUNK_BINS
+      const width = Math.min(CHUNK_BINS, MULTI_TOTAL - from)
+      for (let s = 0; s < SAMPLES.length; s++) {
+        buf.set(
+          MULTI_VALUES.subarray(
+            s * MULTI_TOTAL + from,
+            s * MULTI_TOTAL + from + width,
+          ),
+          s * CHUNK_BINS,
+        )
+      }
+      files[`/bin100/c/0/${c}`] = gzipSync(
+        new Uint8Array(buf.buffer, 0, buf.byteLength),
+      )
+    }
+    return files
+  })(),
+}
+STORES['multi.zarr'] = MULTI_STORE
+
+const CTG_A = { refName: 'ctgA', start: 1000, end: 1600, assemblyName: 'a' }
+const CTG_B = { refName: 'ctgB', start: 0, end: 600, assemblyName: 'a' }
+
+test('adjacent regions are read as one span, not one read each', async () => {
+  const adapter = makeAdapter('multi.zarr')
+  // Warmed first: opening a level array is its own metadata read, and it is
+  // cached for the adapter's life, so counting it here would measure setup
+  // rather than the plan.
+  await adapter.getMultiSourceFeatureArraysMulti([CTG_A], { bpPerPx: 1 })
+  const before = fetchCalls
+  const result = await adapter.getMultiSourceFeatureArraysMulti(
+    [CTG_A, CTG_B],
+    { bpPerPx: 1 },
+  )
+  // 12 bins over 4-wide chunks is 3 chunks. Read per region it would be 4:
+  // ctgA needs chunks 0-1, ctgB needs 1-2, and chunk 1 is paid for twice.
+  expect(fetchCalls - before).toBe(3)
+
+  // and the values still land on the right region
+  const s1 = result[0]!
+  expect([...s1.raws[0]!.scores]).toEqual([0, 1, 2, 3, 4, 5])
+  expect([...s1.raws[1]!.scores]).toEqual([6, 7, 8, 9, 10, 11])
+  expect([...s1.raws[0]!.starts]).toEqual([1000, 1100, 1200, 1300, 1400, 1500])
+  expect([...s1.raws[1]!.starts]).toEqual([0, 100, 200, 300, 400, 500])
+  const s3 = result[2]!
+  expect([...s3.raws[1]!.scores]).toEqual([206, 207, 208, 209, 210, 211])
+})
+
+// The merge rule never reads a chunk it would not have read anyway, so two
+// windows with a real gap between them stay two reads rather than dragging the
+// span between them along.
+test('regions with a gap wider than a chunk stay separate reads', async () => {
+  const adapter = makeAdapter('multi.zarr')
+  await adapter.getMultiSourceFeatureArraysMulti([CTG_A], { bpPerPx: 1 })
+  const before = fetchCalls
+  await adapter.getMultiSourceFeatureArraysMulti(
+    [
+      { refName: 'ctgA', start: 1000, end: 1100, assemblyName: 'a' },
+      { refName: 'ctgB', start: 500, end: 600, assemblyName: 'a' },
+    ],
+    { bpPerPx: 1 },
+  )
+  // bin 0 and bin 11: chunk 0 and chunk 2, and nothing in between
+  expect(fetchCalls - before).toBe(2)
+})
+
+test('a region the level does not cover comes back empty, not wrong', async () => {
+  const adapter = makeAdapter('multi.zarr')
+  const result = await adapter.getMultiSourceFeatureArraysMulti(
+    [{ refName: 'ctgZ', start: 0, end: 600, assemblyName: 'a' }, CTG_A],
+    { bpPerPx: 1 },
+  )
+  expect(result[0]!.raws[0]!.count).toBe(0)
+  expect([...result[0]!.raws[1]!.scores]).toEqual([0, 1, 2, 3, 4, 5])
+})
