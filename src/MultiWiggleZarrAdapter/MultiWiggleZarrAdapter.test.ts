@@ -514,3 +514,30 @@ test('a region the level does not cover comes back empty, not wrong', async () =
   expect(result[0]!.raws[0]!.count).toBe(0)
   expect([...result[0]!.raws[1]!.scores]).toEqual([0, 1, 2, 3, 4, 5])
 })
+
+// avg is the default and draws the mean alone, so the summary arrays are two
+// thirds of a screenful's bytes bought for nothing. Unknown still means read
+// them: an older caller sends no mode at all.
+test('avg mode does not read the summary arrays', async () => {
+  const adapter = makeAdapter('summary.zarr')
+  const result = await adapter.getMultiSourceFeatureArraysMulti([REGION], {
+    bpPerPx: 200,
+    summaryScoreMode: 'avg',
+  })
+  expect([...result[0]!.raws[0]!.scores]).toEqual([0.5, 2.5, 4.5])
+  expect(result[0]!.raws[0]!.minScores).toBeUndefined()
+  expect(result[0]!.raws[0]!.maxScores).toBeUndefined()
+})
+
+test('max mode still reads them, and so does a caller that sends no mode', async () => {
+  for (const opts of [
+    { bpPerPx: 200, summaryScoreMode: 'max' },
+    { bpPerPx: 200 },
+  ]) {
+    const result = await makeAdapter(
+      'summary.zarr',
+    ).getMultiSourceFeatureArraysMulti([REGION], opts)
+    expect([...result[0]!.raws[0]!.minScores!]).toEqual([0, 2, 4])
+    expect([...result[0]!.raws[0]!.maxScores!]).toEqual([1, 3, 5])
+  }
+})

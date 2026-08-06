@@ -35,6 +35,11 @@ interface WiggleOptions extends BaseOptions {
   bpPerPx?: number
   resolution?: number
   sources?: { name: string }[]
+  // The summary presentation the display will actually draw, already resolved
+  // (density turns whiskers into avg). Absent from an older caller, which is
+  // why the test below is for the one mode that draws no summary rather than
+  // for the modes that do: unknown has to mean "read them".
+  summaryScoreMode?: string
 }
 
 // One region's window onto a fetched block of the matrix. The block may be
@@ -333,10 +338,11 @@ export default class MultiWiggleZarrAdapter extends BaseFeatureDataAdapter {
 
     const zarr = await zarritaP
     const { minPath, maxPath } = level
-    const paths = [
-      level.path,
-      ...(minPath && maxPath ? [minPath, maxPath] : []),
-    ]
+    // `avg` draws the mean and nothing else, and it is the default, so reading
+    // the summary arrays there triples the bytes for a screenful to buy a pair
+    // the consumer allocates, fills and then discards.
+    const wantSummary = minPath && maxPath && opts.summaryScoreMode !== 'avg'
+    const paths = [level.path, ...(wantSummary ? [minPath, maxPath] : [])]
     const arrays = await Promise.all(paths.map(p => this.openArray(p, opts)))
     const chunkBins = arrays[0]!.chunks[1] ?? 1
     const runs = this.planFetch(present, chunkBins)
