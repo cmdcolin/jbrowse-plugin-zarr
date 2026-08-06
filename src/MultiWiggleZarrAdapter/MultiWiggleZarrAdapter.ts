@@ -35,10 +35,12 @@ interface WiggleOptions extends BaseOptions {
   bpPerPx?: number
   resolution?: number
   sources?: { name: string }[]
-  // The summary presentation the display will actually draw, already resolved
-  // (density turns whiskers into avg). Absent from an older caller, which is
-  // why the test below is for the one mode that draws no summary rather than
-  // for the modes that do: unknown has to mean "read them".
+  // The summary presentation the display is configured for. The caller sends
+  // its raw setting rather than what the current rendering resolves to, so
+  // this can be `whiskers` on a density track that will draw averages: the
+  // alternative made switching rendering type invalidate the fetch. Absent
+  // from an older caller, which is why the test is for the one mode that draws
+  // no summary rather than for the modes that do -- unknown means "read them".
   summaryScoreMode?: string
 }
 
