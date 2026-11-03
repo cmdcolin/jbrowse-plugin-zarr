@@ -35,6 +35,32 @@ A samples-by-bins array chunked `[all samples, N bins]` answers the same screen
 in one or two chunk reads, whatever the sample count, straight off static
 hosting with no tile server.
 
+### Consider a multi-column bedGraph first
+
+Most of that gain comes from putting every sample in one file, and a
+Tabix-indexed bedGraph with one value column per sample does the same. JBrowse
+reads it with the built-in `BedGraphTabixAdapter`, so it needs no plugin. For
+the 2,504-sample panel on jbrowse.org,
+[jb2bench](https://github.com/cmdcolin/jb2bench) (`scripts/cohort-signal/`)
+measured:
+
+| view                      | 2,504 BigWigs                 | this store                   | multi-column bedGraph       |
+| ------------------------- | ----------------------------- | ---------------------------- | --------------------------- |
+| 190 kb of chr17           | 15,048 requests, 48 MB, 14 s  | 3 requests, 0.19 MB, 0.06 s  | 3 requests, 0.31 MB, 0.08 s |
+| all of chr17, 1,500 px    | 15,048 requests, 69 MB, 15 s  | 40 requests, 9.5 MB, 0.5 s   | 4 requests, 5.9 MB, 1.1 s   |
+
+At a locus the two single-file layouts are the same. The store is ahead only
+when zoomed out. A bedGraph has one bin size, so a whole-chromosome view
+returns every row, and parsing that text is most of its 1.1 s. The store reads
+a coarser level instead, along with its min and max arrays. The gap should grow
+with the view, since a whole-genome view would make the bedGraph fetch and
+parse the entire file, but that case has not been measured.
+
+Use this plugin for genome-wide views of a large cohort, or when the
+[summary levels](#summary-levels) matter at coarse zoom. Otherwise a
+multi-column bedGraph is simpler, smaller (178 MB against this store's 662 MB
+for the whole-genome panel) and needs no plugin.
+
 ## Install
 
 In **beta**: not on npm and not in the
