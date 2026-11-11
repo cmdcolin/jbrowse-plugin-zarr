@@ -85,20 +85,15 @@ copy-number panel) and needs no plugin.
 
 ## Install
 
-In **beta**: not on npm and not in the
-[plugin store](https://jbrowse.org/jb2/docs/user_guides/plugin_store) yet, but
-the built bundle is hosted, so it loads from any config today (see
-[configuring plugins](https://jbrowse.org/jb2/docs/config_guides/plugins)). Add
-the plugin and a track:
+Needs JBrowse 5. Install it from the
+[plugin store](https://jbrowse.org/jb2/docs/user_guides/plugin_store), or name
+it in a config by its store name, which resolves to the newest release the host
+supports (see
+[configuring plugins](https://jbrowse.org/jb2/docs/config_guides/plugins)):
 
 ```json
 {
-  "plugins": [
-    {
-      "name": "Zarr",
-      "url": "https://jbrowse.org/demos/zarr/jbrowse-plugin-zarr.umd.production.min.js"
-    }
-  ],
+  "plugins": [{ "storePlugin": "Zarr" }],
   "tracks": [
     {
       "type": "MultiQuantitativeTrack",
@@ -236,14 +231,17 @@ pnpm build         # dist/jbrowse-plugin-zarr.umd.production.min.js
 Point a JBrowse config's plugin `url` at `http://localhost:9000/dist/out.js` to
 develop against the watch build.
 
-## Publish
+## Release
 
 ```bash
-pnpm betabuild     # lint, typecheck, test, build, upload, invalidate, verify
+pnpm version patch # lint, typecheck, test, build, then push the v* tag
 ```
 
-Pushes to `s3://jbrowse.org/demos/zarr/`, which is what the config URL above
-serves. The script re-downloads the entry point through CloudFront afterwards
-and fails if it does not match what was just built. jbrowse.org is behind a
-CDN, and an upload the edge keeps shadowing looks exactly like a successful
-publish otherwise.
+The tag publishes to npm from CI by trusted publishing, and the plugin store
+takes it from npm at its next update.
+
+`pnpm betabuild` still pushes an unreleased build to
+`https://jbrowse.org/demos/zarr/jbrowse-plugin-zarr.umd.production.min.js` for
+trying a change in a config before releasing it. It re-downloads the entry point
+through CloudFront afterwards and fails if it does not match what was just
+built.
