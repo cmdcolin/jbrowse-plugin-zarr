@@ -457,6 +457,6 @@ export default class MultiWiggleZarrAdapter extends BaseFeatureDataAdapter {
         }
       }
       observer.complete()
-    }, opts.stopToken)
+    }, opts.signal)
   }
 }
