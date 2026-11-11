@@ -44,22 +44,44 @@ the 2,504-sample panel on jbrowse.org,
 [jb2bench](https://github.com/cmdcolin/jb2bench) (`scripts/cohort-signal/`)
 measured:
 
-| view                      | 2,504 BigWigs                 | this store                   | multi-column bedGraph       |
-| ------------------------- | ----------------------------- | ---------------------------- | --------------------------- |
-| 190 kb of chr17           | 15,048 requests, 48 MB, 14 s  | 3 requests, 0.19 MB, 0.06 s  | 3 requests, 0.31 MB, 0.08 s |
-| all of chr17, 1,500 px    | 15,048 requests, 69 MB, 15 s  | 40 requests, 9.5 MB, 0.5 s   | 4 requests, 5.9 MB, 1.1 s   |
+| view                   | 2,504 BigWigs                | this store                  | multi-column bedGraph       |
+| ---------------------- | ---------------------------- | --------------------------- | --------------------------- |
+| 190 kb of chr17        | 15,048 requests, 48 MB, 14 s | 3 requests, 0.19 MB, 0.06 s | 3 requests, 0.31 MB, 0.08 s |
+| all of chr17, 1,500 px | 15,048 requests, 69 MB, 15 s | 40 requests, 9.5 MB, 0.5 s  | 4 requests, 5.9 MB, 1.1 s   |
 
 At a locus the two single-file layouts are the same. The store is ahead only
-when zoomed out. A bedGraph has one bin size, so a whole-chromosome view
-returns every row, and parsing that text is most of its 1.1 s. The store reads
-a coarser level instead, along with its min and max arrays. The gap should grow
-with the view, since a whole-genome view would make the bedGraph fetch and
-parse the entire file, but that case has not been measured.
+when zoomed out: a bedGraph has one bin size, so a whole-chromosome view
+returns every row, and parsing that text is most of its 1.1 s.
 
-Use this plugin for genome-wide views of a large cohort, or when the
-[summary levels](#summary-levels) matter at coarse zoom. Otherwise a
-multi-column bedGraph is simpler, smaller (178 MB against this store's 662 MB
-for the whole-genome panel) and needs no plugin.
+### Per-base signal
+
+Copy number changes slowly and repeats across samples, so one bedGraph row
+stands for a long stretch. Per-base signal does neither. For 100 ENCODE
+ATAC-seq fold-change tracks over chr1:10–20 Mb at their native resolution, the
+same jb2bench script (`SET=perbase`) measured:
+
+| view   | 100 BigWigs                 | this store                 | multi-column bedGraph       |
+| ------ | --------------------------- | -------------------------- | --------------------------- |
+| 1 kb   | 692 requests, 2.3 MB, 0.9 s | 7 requests, 0.05 MB, 0.1 s | 3 requests, 1.0 MB, 0.2 s   |
+| 100 kb | 674 requests, 5.8 MB, 0.9 s | 46 requests, 2.1 MB, 0.2 s | 4 requests, 6.5 MB, 1.5 s   |
+| 1 Mb   | 600 requests, 5.2 MB, 1.0 s | 46 requests, 2.4 MB, 0.4 s | 14 requests, 51 MB, 11 s    |
+| 10 Mb  | 600 requests, 3.2 MB, 0.9 s | 46 requests, 2.1 MB, 0.2 s | 111 requests, 502 MB, 109 s |
+
+A hundred samples rarely share a value at adjacent bases, so the bedGraph keeps
+9.0 million rows for 10 million bases after merging equal ones, and every view
+reads all of them. The store reads a coarser level instead. The BigWigs have
+zoom levels too and hold near 1 s, at 600–700 requests a screen.
+
+The store is the largest of the three on disk: 1.0 GB against 634 MB for the
+BigWigs and 495 MB for the bedGraph. Its 10 bp level with min and max is 390 MB
+of that, more than the 1 bp level, so start the pyramid coarser if disk
+matters more than views around 10–50 kb.
+
+Use this plugin for per-base signal across many samples, for genome-wide views
+of a large cohort, or when the [summary levels](#summary-levels) matter at
+coarse zoom. For binned data viewed at a locus, a multi-column bedGraph is
+simpler, smaller (178 MB against this store's 662 MB for the whole-genome
+copy-number panel) and needs no plugin.
 
 ## Install
 
@@ -196,7 +218,7 @@ stores with gzip.
 
 That is less of a compromise than it looks. On a 2504-sample copy-number chunk,
 gzip-9 gets 9.9x and zstd-9 gets 11.4x, so the wasm buys 13%. A byte-shuffle
-filter ahead of either makes it *worse*, by 73%: shuffle helps floats that vary
+filter ahead of either makes it _worse_, by 73%: shuffle helps floats that vary
 smoothly in their mantissa, and this layout's wins come from long runs of
 identical values that shuffle splits across four distant regions of the buffer.
 Reducing stored precision beats every codec choice here, and costs no bytes on
