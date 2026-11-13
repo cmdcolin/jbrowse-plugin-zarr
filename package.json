@@ -44,7 +44,7 @@
     "zarrita": "^0.7.3"
   },
   "peerDependencies": {
-    "@jbrowse/core": "^5.0.0-beta.12"
+    "@jbrowse/core": "^5.0.0-beta.21"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
