@@ -6,24 +6,27 @@ into a JBrowse 2
 It reads stores written for it, described by a `jbrowse_signal_matrix` metadata
 object, not Zarr in general.
 
-One BigWig per sample costs three to four sequential requests per sample, so a
-2,500-sample screen is thousands of requests. Here every sample sits in one
-array, so a screen is a handful of chunk reads straight off static hosting, with
-no tile server.
+<table>
+  <tr>
+    <td width="50%"><img src="img/zarr_cohort.png" alt="Copy number for 2,504 individuals as a red and blue heatmap, one row per person"></td>
+    <td width="50%"><img src="img/zarr_singlecell.png" alt="Per-cell coverage for 4,390 single cells over LYZ, rows grouped and colored by cell type"></td>
+  </tr>
+  <tr>
+    <td>Copy number for the 2,504-sample 1000 Genomes panel over CCL3L1: three requests for the screen. <a href="docs/benchmarks.md#copy-number-2504-samples">Data and credit</a></td>
+    <td>Per-cell coverage for 4,390 PBMCs over LYZ, one row per cell. <a href="https://jbrowse.org/jb2-staging/docs/tutorials/scrna_pseudobulk/">Tutorial</a></td>
+  </tr>
+</table>
 
-- Resolution levels, with optional min and max beside the mean, so narrow
-  features survive zooming out
-- Unmeasured bins stay empty rather than drawing as zero
-- Sample names, colors and groups come from the store
-- Works on any host that answers range requests
+One BigWig per sample costs three to four sequential requests per sample. Here
+every sample sits in one array, so a screen is a handful of chunk reads straight
+off static hosting, with no tile server. Resolution levels carry min and max
+beside the mean, and sample names, colors and groups come from the store.
 
 ## Install
 
-Needs JBrowse 5. Install it from the
-[plugin store](https://jbrowse.org/jb2/docs/user_guides/plugin_store), or name
-it in a config by its store name, which resolves to the newest release the host
-supports (see
-[configuring plugins](https://jbrowse.org/jb2/docs/config_guides/plugins)):
+Needs JBrowse 5. Install `Zarr` from the
+[plugin store](https://jbrowse.org/jb2/docs/user_guides/plugin_store), or name it
+in a config:
 
 ```json
 {
@@ -44,8 +47,8 @@ supports (see
 }
 ```
 
-The adapter config is the store's location and nothing else. Sample names, bin
-size and resolution levels come from the store's own metadata.
+The adapter config is the store's location; everything else comes from the
+store's metadata.
 
 ## Docs
 
