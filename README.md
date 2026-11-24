@@ -13,7 +13,7 @@ object, not Zarr in general.
   </tr>
   <tr>
     <td>Copy number for the 2,504-sample 1000 Genomes panel over CCL3L1: three requests for the screen. <a href="docs/benchmarks.md#copy-number-2504-samples">Data and credit</a></td>
-    <td>Per-cell coverage for 4,390 PBMCs over LYZ, one row per cell, grouped by cell type. <a href="https://jbrowse.org/jb2-staging/docs/tutorials/scrna_pseudobulk/">Tutorial</a></td>
+    <td>Per-cell coverage for 4,390 PBMCs over the 3' end of LYZ, one row per cell, grouped by cell type (bottom track; the pseudobulk rows above are BigWigs). <a href="https://jbrowse.org/jb2-staging/docs/tutorials/scrna_pseudobulk/">Tutorial</a></td>
   </tr>
 </table>
 
@@ -53,9 +53,9 @@ store's metadata.
 ## Docs
 
 - [Store format](docs/store-format.md): metadata, chunk layout, summary levels,
-  size, codecs, and ideas not done yet such as sharding
+  size, codecs, and todos yet such as sharding
 - [Benchmarks](docs/benchmarks.md): a worked example on the 1000 Genomes panel,
-  and requests, bytes and time against BigWigs and a bedGraph
+  and comparison to BigWigs and a bedGraph
 - [Comparison](docs/comparison.md): when to use a bedGraph, BigWigs or figwig
   instead
 - [Development](docs/development.md): building, testing and releasing
