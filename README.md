@@ -47,7 +47,8 @@ Zoom levels:
 - A store holds a resolution pyramid, one array per level, each with its own bin
   size.
 - The adapter reads the coarsest level whose bins are no wider than a screen
-  pixel, so a whole-chromosome view and a 1 kb view cost about the same.
+  pixel, so wide views stop growing: 46 requests at 100 kb and at 10 Mb in the
+  [per-base benchmark](docs/benchmarks.md#per-base-signal-100-samples).
 - A level can carry min and max arrays beside its mean, as a BigWig zoom record
   does, so narrow features survive zooming out.
 - Switching between mean, min and max redraws without a refetch.
@@ -60,8 +61,8 @@ Capabilities:
 - Unmeasured bins stay empty rather than drawing as zero.
 - Sample names, colors and group attributes come from the store, for coloring,
   grouping and filtering rows.
-- Clustering works through the display's usual score-matrix path.
-- Static hosting only: any server that answers range requests.
+- Clustering reads the store through the display's score-matrix path.
+- Needs only static hosting: any server that answers range requests.
 
 Not done yet, but something Zarr can do:
 
