@@ -79,6 +79,24 @@ its mean. They are the same shape and chunking as the level itself.
   input was. If the finest level is itself an aggregate of something finer, the
   whiskers describe the store, not the source.
 
+## Ideas not done yet
+
+None of these is implemented. They are things the Zarr v3 format already
+supports, so a store written this way would not need a new format.
+
+- **Sharding.** The sharding codec packs many inner chunks into one object with
+  an index at its end, and a reader fetches an inner chunk by range request. A
+  large store then has thousands of files instead of millions, which matters on
+  object stores and for copying a store around, while a screen still reads the
+  same few inner chunks. zarrita, which this plugin uses, implements the codec.
+  What is untested here is how it behaves at this layout's chunk sizes and
+  against the hosts people serve from.
+- **Sample-grouped chunks with row-only reads.** Chunk `[k samples, 256 bins]`
+  and have the adapter request only the rows the display asks for (it already
+  receives the wanted sample names). This is the answer for a hub with thousands
+  of samples where people show a few. Sharding fits here: one shard per bin range
+  holding an inner chunk per sample group keeps one object per region.
+
 ## Size
 
 Two knobs, both read-side transparent, so neither needs a reader to know:

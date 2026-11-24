@@ -40,6 +40,35 @@ matter at coarse zoom. For binned data viewed at a locus, a multi-column
 bedGraph is simpler and smaller; see the
 [comparison](docs/comparison.md).
 
+## Features
+
+Zoom levels:
+
+- A store holds a resolution pyramid, one array per level, each with its own bin
+  size.
+- The adapter reads the coarsest level whose bins are no wider than a screen
+  pixel, so a whole-chromosome view and a 1 kb view cost about the same.
+- A level can carry min and max arrays beside its mean, as a BigWig zoom record
+  does, so narrow features survive zooming out.
+- Switching between mean, min and max redraws without a refetch.
+
+Capabilities:
+
+- A screen is a handful of chunk reads, whatever the sample count.
+- Multi-region and whole-genome views merge into as few reads as the layout
+  allows.
+- Unmeasured bins stay empty rather than drawing as zero.
+- Sample names, colors and group attributes come from the store, for coloring,
+  grouping and filtering rows.
+- Clustering works through the display's usual score-matrix path.
+- Static hosting only: any server that answers range requests.
+
+Not done yet, but something Zarr can do:
+
+- [Sharding](docs/store-format.md#ideas-not-done-yet) to cut object counts, and
+  sample-grouped chunks with row-only reads for stores where people show a few
+  samples out of thousands.
+
 ## Install
 
 Needs JBrowse 5. Install it from the
