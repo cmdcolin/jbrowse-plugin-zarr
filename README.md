@@ -13,7 +13,7 @@ object, not Zarr in general.
   </tr>
   <tr>
     <td>Copy number for the 2,504-sample 1000 Genomes panel over CCL3L1: three requests for the screen. <a href="docs/benchmarks.md#copy-number-2504-samples">Data and credit</a></td>
-    <td>Per-cell coverage for 4,390 PBMCs over LYZ, one row per cell. <a href="https://jbrowse.org/jb2-staging/docs/tutorials/scrna_pseudobulk/">Tutorial</a></td>
+    <td>Per-cell coverage for 4,390 PBMCs over LYZ, one row per cell, grouped by cell type. <a href="https://jbrowse.org/jb2-staging/docs/tutorials/scrna_pseudobulk/">Tutorial</a></td>
   </tr>
 </table>
 
