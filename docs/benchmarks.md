@@ -7,7 +7,23 @@ JBrowse's built-in `BedGraphTabixAdapter`).
 
 ## Copy number, 2,504 samples
 
-The 1000 Genomes panel on jbrowse.org. Copy number changes slowly and repeats
+![Copy number for 2504 individuals as a red and blue heatmap, one row per person, over a 190 kb window of human chromosome 17](../img/zarr_cohort.png)
+
+Every individual in the 1000 Genomes panel over the CCL3L1 locus, one row each,
+clustered so the copy-number classes separate. White is two copies, red a gain,
+blue a loss. The whole screen is three requests against one store. Built in
+[Population copy number with the 1000 Genomes panel](https://jbrowse.org/jb2-staging/docs/tutorials/population_cnv/),
+this adapter's worked example, which also covers writing the store.
+
+The copy-number values are not ours. They are
+[QuicK-mer2](https://github.com/KiddLab/QuicK-mer2) estimates over the 30x 1000
+Genomes panel, produced by the Kidd lab at the University of Michigan and
+published as the [KiddLab/kmer_1KG](https://github.com/KiddLab/kmer_1KG) track
+hub. If you use them, cite Shen F and Kidd JM,
+[Rapid, Paralog-Sensitive CNV Analysis of 2457 Human Genomes Using QuicK-mer2](https://doi.org/10.3390/genes11020141),
+Genes 2020, 11(2):141.
+
+Timings on the same panel. Copy number changes slowly and repeats
 across samples, so one bedGraph row covers a long stretch.
 
 | view                   | 2,504 BigWigs                | this store                  | multi-column bedGraph       |

@@ -1,5 +1,9 @@
 # Store format
 
+Write one with
+[`build_signal_zarr.ts`](https://github.com/GMOD/jbrowse-components/blob/main/scripts/build_signal_zarr.ts),
+which packs a list of BigWigs into this layout.
+
 A Zarr v3 group whose root attributes carry a `jbrowse_signal_matrix` object,
 plus one `float32` array per resolution level:
 
