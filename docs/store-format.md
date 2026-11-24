@@ -4,6 +4,28 @@ Write one with
 [`build_signal_zarr.ts`](https://github.com/GMOD/jbrowse-components/blob/main/scripts/build_signal_zarr.ts),
 which packs a list of BigWigs into this layout.
 
+## What a store is on disk
+
+Zarr is a specification for chunked arrays, not a single file. A store is a
+directory (or an object-store prefix) served as static files:
+
+```
+cohort.zarr/
+  zarr.json            the group, with the jbrowse_signal_matrix attributes
+  bin1000/
+    zarr.json          shape, dtype, chunk shape and codecs of one level
+    c/0/0, c/0/1, ...  one file per chunk
+```
+
+- The adapter fetches `zarr.json`, then only the chunk files a view needs, so any
+  host that serves files works. The directory has no index page: `cohort.zarr/`
+  may return a 404 while `cohort.zarr/zarr.json` loads.
+- A store is thousands of small files, which is slow to copy or upload. Sharding
+  (see [ideas not done yet](#ideas-not-done-yet)) packs chunks into fewer
+  files.
+- The widest view is the coverage of the store's levels. A store built over
+  marker windows, as in the single-cell tutorial, has data only inside them.
+
 A Zarr v3 group whose root attributes carry a `jbrowse_signal_matrix` object,
 plus one `float32` array per resolution level:
 
